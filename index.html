@@ -13,13 +13,29 @@
 </style>
 </head>
 <body>
-<div id="root"></div>
+<div id="root">
+  <div id="fallback-loading" style="font-family: sans-serif; padding: 24px; color: #333;">Loading…</div>
+</div>
+<div id="error-overlay" style="display:none; position:fixed; inset:0; background:#1a1a1a; color:#ff8b7d; font-family:monospace; font-size:13px; padding:20px; overflow:auto; z-index:9999; white-space:pre-wrap;"></div>
+<script>
+  function showError(msg) {
+    var el = document.getElementById('error-overlay');
+    el.style.display = 'block';
+    el.textContent = 'Something went wrong loading the app:\n\n' + msg;
+  }
+  window.onerror = function(msg, src, line, col, err) {
+    showError(msg + '\n(line ' + line + ')');
+  };
+  window.addEventListener('unhandledrejection', function(e) {
+    showError('Promise error: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+  });
+</script>
 
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-<script type="text/babel" data-presets="react">
+<script type="text/babel">
 const { useState, useEffect, useMemo } = React;
 
 // ---------- icons (small inline SVGs, no external icon library needed) ----------
@@ -100,7 +116,6 @@ function occurrencesInRange(pickup, rangeStart, rangeEnd) {
 }
 
 // ---------- backend ----------
-// Paste the Web app URL from your Apps Script deployment here:
 const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyizbNOCK4QtIDjGUohGaIaHqdyu1j4wHielT9ynE42cZ4h3NjqdLTZtLvUmRvnEY1POg/exec';
 
 async function apiCall(action, extra = {}) {

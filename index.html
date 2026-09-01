@@ -124,10 +124,20 @@ async function apiCall(action, extra = {}) {
   if (extra.passcode !== undefined) params.set('passcode', extra.passcode);
   if (extra.newPasscode !== undefined) params.set('newPasscode', extra.newPasscode);
   if (extra.data !== undefined) params.set('data', JSON.stringify(extra.data));
-  const res = await fetch(SCRIPT_URL + '?' + params.toString());
-  return res.json();
+  const url = SCRIPT_URL + '?' + params.toString();
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (err) {
+    throw new Error('Fetch failed for URL: ' + url + ' — ' + err.message);
+  }
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw new Error('Non-JSON response from URL: ' + url + ' — got: ' + text.slice(0, 120));
+  }
 }
-
 const RECURRENCE_LABEL = { weekly: 'Weekly', fortnightly: 'Fortnightly', triweekly: 'Every 3 weeks', monthly: 'Monthly' };
 
 const emptyForm = {

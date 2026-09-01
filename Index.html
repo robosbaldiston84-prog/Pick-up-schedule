@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Pickup Schedule</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'IBM Plex Sans', sans-serif; }
+  button { font-family: inherit; cursor: pointer; }
+  input, select, textarea { font-family: inherit; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+// ---------- icons (small inline SVGs, no external icon library needed) ----------
+function Icon({ path, size = 16, ...props }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      {path}
+    </svg>
+  );
+}
+const Plus = (p) => <Icon {...p} path={<><path d="M12 5v14M5 12h14" /></>} />;
+const Trash2 = (p) => <Icon {...p} path={<><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6" /></>} />;
+const Pencil = (p) => <Icon {...p} path={<><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3Z" /></>} />;
+const Mail = (p) => <Icon {...p} path={<><rect x="2" y="4" width="20" height="16" rx="2" /><path d="m22 6-10 7L2 6" /></>} />;
+const MapPin = (p) => <Icon {...p} path={<><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" /><circle cx="12" cy="10" r="3" /></>} />;
+const Repeat = (p) => <Icon {...p} path={<><path d="m17 2 4 4-4 4" /><path d="M3 11v-1a4 4 0 0 1 4-4h14" /><path d="m7 22-4-4 4-4" /><path d="M21 13v1a4 4 0 0 1-4 4H3" /></>} />;
+const XIcon = (p) => <Icon {...p} path={<><path d="M18 6 6 18M6 6l12 12" /></>} />;
+const Package = (p) => <Icon {...p} path={<><path d="m7.5 4.27 9 5.15" /><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" /><path d="M3.3 7 12 12l8.7-5" /><path d="M12 22V12" /></>} />;
+
+// ---------- date helpers ----------
+function toDate(s) {
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+function fmtISO(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function addDays(d, n) {
+  const r = new Date(d);
+  r.setDate(r.getDate() + n);
+  return r;
+}
+function addMonthsClamped(d, n) {
+  const day = d.getDate();
+  const r = new Date(d.getFullYear(), d.getMonth() + n, 1);
+  const lastDay = new Date(r.getFullYear(), r.getMonth() + 1, 0).getDate();
+  r.setDate(Math.min(day, lastDay));
+  return r;
+}
+function startOfWeek(d) {
+  const r = new Date(d);
+  const day = r.getDay();
+  const diff = (day + 6) % 7;
+  r.setDate(r.getDate() - diff);
+  r.setHours(0, 0, 0, 0);
+  return r;
+}
+const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function occurrencesInRange(pickup, rangeStart, rangeEnd) {
+  const anchor = toDate(pickup.startDate);
+  const out = [];
+  if (pickup.recurrence === 'monthly') {
+    let cursor = anchor;
+    let guard = 0;
+    while (cursor < rangeStart && guard < 600) { cursor = addMonthsClamped(cursor, 1); guard++; }
+    guard = 0;
+    while (cursor <= rangeEnd && guard < 24) {
+      if (cursor >= rangeStart) out.push(new Date(cursor));
+      cursor = addMonthsClamped(cursor, 1);
+      guard++;
+    }
+  } else {
+    const interval = pickup.recurrence === 'fortnightly' ? 14 : pickup.recurrence === 'triweekly' ? 21 : 7;
+    let cursor = anchor;
+    let guard = 0;
+    while (cursor < rangeStart && guard < 3000) { cursor = addDays(cursor, interval); guard++; }
+    guard = 0;
+    while (cursor <= rangeEnd && guard < 20) {
+      if (cursor >= rangeStart) out.push(new Date(cursor));
+      cursor = addDays(cursor, interval);
+      guard++;
+    }
+  }
+  return out;
+}
+
+// ---------- backend ----------
+// Paste the Web app URL from your Apps Script deployment here:
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyizbNOCK4QtIDjGUohGaIaHqdyu1j4wHielT9ynE42cZ4h3NjqdLTZtLvUmRvnEY1POg/exec';
+
+async function apiCall(action, extra = {}) {
+  const params = new URLSearchParams();
+  params.set('action', action);
+  if (extra.passcode !== undefined) params.set('passcode', extra.passcode);
+  if (extra.newPasscode !== undefined) params.set('newPasscode', extra.newPasscode);
+  if (extra.data !== undefined) params.set('data', JSON.stringify(extra.data));
+  const res = await fetch(SCRIPT_URL + '?' + params.toString());
+  return res.json();
+}
+
+const RECURRENCE_LABEL = { weekly: 'Weekly', fortnightly: 'Fortnightly', triweekly: 'Every 3 weeks', monthly: 'Monthly' };
+
+const emptyForm = {
+  title: '', itemDescription: '', location: '', recurrence: 'weekly',
+  startDate: fmtISO(new Date()), clientName: '', clientContact: '', notes: '',
+};
+
+const inputStyle = {
+  width: '100%', padding: '9px 11px', borderRadius: 8, border: '1px solid #DDD8CB',
+  fontSize: 14, marginTop: 4, background: '#FAF9F5', color: '#1C2B2A'
+};
+
+function Field({ label, children, style }) {
+  return (
+    <label style={{ display: 'block', marginBottom: 12, fontSize: 13, color: '#5B6864', fontWeight: 500, ...style }}>
+      {label}
+      {children}
+    </label>
+  );
+}
+
+function App() {
+  const [pickups, setPickups] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState(emptyForm);
+  const [emailOpen, setEmailOpen] = useState(false);
+  const [saveError, setSaveError] = useState(false);
+  const [activeTab, setActiveTab] = useState('schedule');
+  const [locationSearch, setLocationSearch] = useState('');
+
+  const [gateStatus, setGateStatus] = useState(SCRIPT_URL.includes('PASTE_YOUR') ? 'unconfigured' : null);
+  const [teamPasscode, setTeamPasscode] = useState('');
+  const [passInput, setPassInput] = useState('');
+  const [passError, setPassError] = useState('');
+  const [gateBusy, setGateBusy] = useState(false);
+
+  function withTimeout(promise, ms) {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms)),
+    ]);
+  }
+
+  useEffect(() => {
+    if (gateStatus === 'unconfigured') return;
+    (async () => {
+      try {
+        const res = await withTimeout(apiCall('status'), 8000);
+        if (res.error) { setGateStatus('setup'); return; }
+        setGateStatus(res.hasPasscode ? 'locked' : 'setup');
+      } catch (e) {
+        setGateStatus('setup');
+      }
+    })();
+  }, []);
+
+  async function submitPasscodeSetup(e) {
+    e.preventDefault();
+    const val = passInput.trim();
+    if (val.length < 4) { setPassError('Use at least 4 characters.'); return; }
+    setGateBusy(true);
+    setPassError('');
+    try {
+      const res = await withTimeout(apiCall('setup', { passcode: val }), 8000);
+      if (res.error) { setPassError(res.error); return; }
+      setTeamPasscode(val);
+      setPickups([]);
+      setLoading(false);
+      setGateStatus('unlocked');
+    } catch (e) {
+      setPassError("Couldn't reach the backend: " + (e && e.message ? e.message : 'unknown error'));
+    } finally {
+      setGateBusy(false);
+    }
+  }
+  async function submitPasscodeEntry(e) {
+    e.preventDefault();
+    const val = passInput.trim();
+    setGateBusy(true);
+    setPassError('');
+    try {
+      const res = await withTimeout(apiCall('get', { passcode: val }), 8000);
+      if (res.error) {
+        setPassError(res.error === 'Invalid passcode.' ? 'Wrong passcode.' : res.error);
+        return;
+      }
+      setTeamPasscode(val);
+      setPickups(res.data || []);
+      setLoading(false);
+      setGateStatus('unlocked');
+    } catch (e) {
+      setPassError("Couldn't reach the backend: " + (e && e.message ? e.message : 'unknown error'));
+    } finally {
+      setGateBusy(false);
+    }
+  }
+
+  async function persist(next) {
+    setPickups(next);
+    try {
+      const res = await apiCall('set', { passcode: teamPasscode, data: next });
+      setSaveError(!res.ok);
+    } catch (e) {
+      setSaveError(true);
+    }
+  }
+
+  const weekStart = useMemo(() => startOfWeek(new Date()), []);
+  const weekEnd = useMemo(() => { const e = addDays(weekStart, 6); e.setHours(23,59,59,999); return e; }, [weekStart]);
+
+  const thisWeek = useMemo(() => {
+    const rows = [];
+    pickups.forEach(p => {
+      occurrencesInRange(p, weekStart, weekEnd).forEach(date => rows.push({ ...p, date }));
+    });
+    rows.sort((a, b) => a.date - b.date);
+    return rows;
+  }, [pickups, weekStart, weekEnd]);
+
+  const grouped = useMemo(() => {
+    const g = { weekly: [], fortnightly: [], triweekly: [], monthly: [] };
+    pickups.forEach(p => g[p.recurrence]?.push(p));
+    return g;
+  }, [pickups]);
+
+  function openAdd() { setForm(emptyForm); setEditingId(null); setModalOpen(true); }
+  function openEdit(p) { setForm({ ...p }); setEditingId(p.id); setModalOpen(true); }
+  function closeModal() { setModalOpen(false); }
+  function saveForm(e) {
+    e.preventDefault();
+    if (!form.title.trim() || !form.startDate) return;
+    if (editingId) {
+      persist(pickups.map(p => (p.id === editingId ? { ...form, id: editingId } : p)));
+    } else {
+      persist([...pickups, { ...form, id: Date.now().toString(36) }]);
+    }
+    setModalOpen(false);
+  }
+  function deletePickup(id) { persist(pickups.filter(p => p.id !== id)); }
+
+  const weekLabel = `${MONTHS[weekStart.getMonth()]} ${weekStart.getDate()} – ${MONTHS[weekEnd.getMonth()]} ${weekEnd.getDate()}`;
+
+  const emailText = useMemo(() => {
+    if (thisWeek.length === 0) {
+      return `Pickups due this week (${weekLabel})\n\nNothing scheduled this week.`;
+    }
+    const lines = thisWeek.map(p => {
+      const day = DOW[p.date.getDay()];
+      const parts = [`${day} — ${p.title}`];
+      if (p.itemDescription) parts.push(`  Item: ${p.itemDescription}`);
+      if (p.location) parts.push(`  Location: ${p.location}`);
+      if (p.clientName) parts.push(`  Client: ${p.clientName}${p.clientContact ? ' (' + p.clientContact + ')' : ''}`);
+      if (p.notes) parts.push(`  Notes: ${p.notes}`);
+      return parts.join('\n');
+    });
+    return `Pickups due this week (${weekLabel})\n\n${lines.join('\n\n')}`;
+  }, [thisWeek, weekLabel]);
+
+  const mailtoHref = `mailto:?subject=${encodeURIComponent('Pickups due this week — ' + weekLabel)}&body=${encodeURIComponent(emailText)}`;
+
+  if (gateStatus === 'unconfigured') {
+    return (
+      <div style={{ background: '#16221F', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, color: '#F5F3EE' }}>
+        <div style={{ maxWidth: 360 }}>
+          <h1 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 20, marginBottom: 10 }}>Backend not connected yet</h1>
+          <p style={{ color: '#A9B6B2', fontSize: 14, lineHeight: 1.6 }}>
+            Set SCRIPT_URL near the top of this file to your deployed Apps Script Web app URL.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (gateStatus === null) {
+    return (
+      <div style={{ background: '#16221F', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#A9B6B2', fontSize: 14 }}>
+        Loading…
+      </div>
+    );
+  }
+
+  if (gateStatus === 'setup' || gateStatus === 'locked') {
+    const isSetup = gateStatus === 'setup';
+    return (
+      <div style={{ background: '#16221F', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, color: '#F5F3EE' }}>
+        <div style={{ width: '100%', maxWidth: 340 }}>
+          <h1 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 22, marginBottom: 6 }}>Pickup schedule</h1>
+          <p style={{ color: '#A9B6B2', fontSize: 14, marginBottom: 18 }}>
+            {isSetup
+              ? "Set a passcode for your team. Share it with whoever needs access — anyone entering it can view and edit the schedule."
+              : 'Enter the team passcode to continue.'}
+          </p>
+          <input
+            type="text" inputMode="text" autoCapitalize="none" autoCorrect="off"
+            value={passInput}
+            onChange={e => { setPassInput(e.target.value); setPassError(''); }}
+            onKeyDown={e => { if (e.key === 'Enter') (isSetup ? submitPasscodeSetup : submitPasscodeEntry)(e); }}
+            placeholder={isSetup ? 'Choose a passcode' : 'Passcode'}
+            autoFocus
+            style={{ width: '100%', padding: '11px 13px', borderRadius: 8, border: '1px solid #33453F', fontSize: 15, marginBottom: 10, background: '#1F2E2A', color: '#F5F3EE' }}
+          />
+          {passError && <p style={{ color: '#E2A187', fontSize: 13, marginBottom: 10 }}>{passError}</p>}
+          <button type="button" disabled={gateBusy} onClick={isSetup ? submitPasscodeSetup : submitPasscodeEntry}
+            style={{ width: '100%', background: gateBusy ? '#3F5D53' : '#2F6B5E', color: '#fff', border: 'none', borderRadius: 8, padding: '12px', fontSize: 15, fontWeight: 600 }}>
+            {gateBusy ? 'Checking…' : (isSetup ? 'Set passcode & continue' : 'Unlock')}
+          </button>
+          {isSetup && (
+            <p style={{ color: '#7A8985', fontSize: 12, marginTop: 12, lineHeight: 1.5 }}>
+              Note: this is one shared team passcode, not individual logins — anyone who has it gets full access.
+            </p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: '#F5F3EE', minHeight: '100vh', color: '#1C2B2A', padding: '24px 16px 64px' }}>
+      <div style={{ maxWidth: 720, margin: '0 auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 28, gap: 12 }}>
+          <div>
+            <h1 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 26, fontWeight: 700, margin: 0, letterSpacing: '-0.01em', color: '#16221F' }}>Pickup schedule</h1>
+            <p style={{ margin: '4px 0 0', color: '#6B7A76', fontSize: 14 }}>Bins & bags · week of {weekLabel}</p>
+          </div>
+          <button onClick={openAdd} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#2F6B5E', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 14px', fontSize: 14, fontWeight: 600, boxShadow: '0 1px 2px rgba(0,0,0,0.08)' }}>
+            <Plus size={16} /> Add pickup
+          </button>
+        </div>
+
+        {saveError && (
+          <div style={{ background: '#FCEEE0', border: '1px solid #E9C08F', color: '#8A4B0F', padding: '10px 12px', borderRadius: 8, fontSize: 13, marginBottom: 16 }}>
+            Couldn't save — your last change may not persist. Try again.
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 4, marginBottom: 20, background: '#EAE6DA', borderRadius: 9, padding: 4 }}>
+          {[['schedule', 'Schedule'], ['locations', 'Locations & contacts']].map(([key, label]) => (
+            <button key={key} onClick={() => setActiveTab(key)} style={{ flex: 1, border: 'none', borderRadius: 6, padding: '8px 10px', fontSize: 13, fontWeight: 600, background: activeTab === key ? '#fff' : 'transparent', color: activeTab === key ? '#16221F' : '#6B7A76', boxShadow: activeTab === key ? '0 1px 2px rgba(0,0,0,0.08)' : 'none' }}>{label}</button>
+          ))}
+        </div>
+
+        {activeTab === 'schedule' && (
+        <>
+        <section style={{ background: '#16221F', color: '#F5F3EE', borderRadius: 14, padding: '20px 20px 16px', marginBottom: 20 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+            <h2 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 16, fontWeight: 600, margin: 0 }}>Due this week ({thisWeek.length})</h2>
+            <button onClick={() => setEmailOpen(true)} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#F5F3EE', color: '#16221F', border: 'none', borderRadius: 7, padding: '7px 11px', fontSize: 13, fontWeight: 600 }}>
+              <Mail size={14} /> Compose Monday email
+            </button>
+          </div>
+          {loading ? (
+            <p style={{ color: '#A9B6B2', fontSize: 14 }}>Loading…</p>
+          ) : thisWeek.length === 0 ? (
+            <p style={{ color: '#A9B6B2', fontSize: 14 }}>Nothing due this week.</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {thisWeek.map((p, i) => (
+                <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'flex-start', background: '#1F2E2A', borderRadius: 10, padding: '10px 12px' }}>
+                  <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 600, fontSize: 13, color: '#7FBBA6', minWidth: 36 }}>{DOW[p.date.getDay()]}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600 }}>{p.title}</div>
+                    {p.itemDescription && <div style={{ fontSize: 13, color: '#C6D0CC', marginTop: 2 }}>{p.itemDescription}</div>}
+                    {p.location && <div style={{ fontSize: 12, color: '#8FA09B', marginTop: 3, display: 'flex', alignItems: 'center', gap: 4 }}><MapPin size={11} /> {p.location}</div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section>
+          <h2 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 15, fontWeight: 600, margin: '0 0 10px', color: '#16221F' }}>All pickups</h2>
+          {['weekly', 'fortnightly', 'triweekly', 'monthly'].map(rec => (
+            grouped[rec].length > 0 && (
+              <div key={rec} style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#8FA09B', marginBottom: 6 }}>{RECURRENCE_LABEL[rec]} ({grouped[rec].length})</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {grouped[rec].map(p => (
+                    <div key={p.id} style={{ background: '#fff', border: '1px solid #E4E0D6', borderRadius: 10, padding: '12px 14px', display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 14, fontWeight: 600 }}>{p.title}</div>
+                        {p.itemDescription && <div style={{ fontSize: 13, color: '#5B6864', marginTop: 2 }}>{p.itemDescription}</div>}
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 6, fontSize: 12, color: '#8B968F' }}>
+                          {p.location && <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><MapPin size={11} />{p.location}</span>}
+                          {p.clientName && <span>{p.clientName}{p.clientContact ? ` · ${p.clientContact}` : ''}</span>}
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Repeat size={11} />since {p.startDate}</span>
+                        </div>
+                        {p.notes && <div style={{ fontSize: 12, color: '#A0ABA6', marginTop: 4, fontStyle: 'italic' }}>{p.notes}</div>}
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                        <button onClick={() => openEdit(p)} style={{ background: 'none', border: 'none', color: '#6B7A76', padding: 4 }}><Pencil size={15} /></button>
+                        <button onClick={() => deletePickup(p.id)} style={{ background: 'none', border: 'none', color: '#B5766B', padding: 4 }}><Trash2 size={15} /></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          ))}
+          {!loading && pickups.length === 0 && (
+            <div style={{ textAlign: 'center', padding: '32px 0', color: '#8FA09B' }}>
+              <Package size={28} style={{ marginBottom: 8, opacity: 0.6 }} />
+              <p style={{ fontSize: 14, margin: 0 }}>No pickups yet. Add your first one above.</p>
+            </div>
+          )}
+        </section>
+        </>
+        )}
+
+        {activeTab === 'locations' && (
+          <section>
+            <input value={locationSearch} onChange={e => setLocationSearch(e.target.value)} placeholder="Search by name, address, or contact…" style={{ ...inputStyle, marginBottom: 14, marginTop: 0 }} />
+            {(() => {
+              const q = locationSearch.trim().toLowerCase();
+              const rows = pickups
+                .filter(p => p.location || p.clientName || p.clientContact)
+                .filter(p => !q || [p.title, p.location, p.clientName, p.clientContact].join(' ').toLowerCase().includes(q))
+                .sort((a, b) => a.title.localeCompare(b.title));
+              if (rows.length === 0) {
+                return (
+                  <div style={{ textAlign: 'center', padding: '32px 0', color: '#8FA09B' }}>
+                    <MapPin size={28} style={{ marginBottom: 8, opacity: 0.6 }} />
+                    <p style={{ fontSize: 14, margin: 0 }}>{pickups.length === 0 ? 'No pickups yet.' : 'No matches.'}</p>
+                  </div>
+                );
+              }
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {rows.map(p => (
+                    <div key={p.id} style={{ background: '#fff', border: '1px solid #E4E0D6', borderRadius: 10, padding: '12px 14px' }}>
+                      <div style={{ fontSize: 14, fontWeight: 600 }}>{p.title}</div>
+                      {p.location && <div style={{ fontSize: 13, color: '#5B6864', marginTop: 4, display: 'flex', alignItems: 'center', gap: 5 }}><MapPin size={13} /> {p.location}</div>}
+                      {(p.clientName || p.clientContact) && (
+                        <div style={{ fontSize: 13, color: '#5B6864', marginTop: 3 }}>
+                          {p.clientName}{p.clientName && p.clientContact ? ' · ' : ''}
+                          {p.clientContact && /^[\d+()\-\s]{5,}$/.test(p.clientContact) ? (
+                            <a href={`tel:${p.clientContact.replace(/[^\d+]/g, '')}`} style={{ color: '#2F6B5E', fontWeight: 600, textDecoration: 'none' }}>{p.clientContact}</a>
+                          ) : p.clientContact}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+          </section>
+        )}
+      </div>
+
+      {modalOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(22,34,31,0.45)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 50 }} onClick={closeModal}>
+          <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: '16px 16px 0 0', width: '100%', maxWidth: 480, padding: '20px 20px 24px', maxHeight: '88vh', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h3 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 17, margin: 0 }}>{editingId ? 'Edit pickup' : 'Add pickup'}</h3>
+              <button type="button" onClick={closeModal} style={{ background: 'none', border: 'none', color: '#6B7A76' }}><XIcon size={20} /></button>
+            </div>
+            <Field label="Title *">
+              <input required value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} placeholder="e.g. Smith Residence" style={inputStyle} />
+            </Field>
+            <Field label="What's being picked up">
+              <input value={form.itemDescription} onChange={e => setForm({ ...form, itemDescription: e.target.value })} placeholder="e.g. General waste bin, 2x recycling bags" style={inputStyle} />
+            </Field>
+            <Field label="Location / address">
+              <input value={form.location} onChange={e => setForm({ ...form, location: e.target.value })} placeholder="e.g. 12 Oak St" style={inputStyle} />
+            </Field>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <Field label="Recurrence" style={{ flex: 1 }}>
+                <select value={form.recurrence} onChange={e => setForm({ ...form, recurrence: e.target.value })} style={inputStyle}>
+                  <option value="weekly">Weekly</option>
+                  <option value="fortnightly">Fortnightly</option>
+                  <option value="triweekly">Every 3 weeks</option>
+                  <option value="monthly">Monthly</option>
+                </select>
+              </Field>
+              <Field label="Start date *" style={{ flex: 1 }}>
+                <input required type="date" value={form.startDate} onChange={e => setForm({ ...form, startDate: e.target.value })} style={inputStyle} />
+              </Field>
+            </div>
+            <Field label="Client name">
+              <input value={form.clientName} onChange={e => setForm({ ...form, clientName: e.target.value })} style={inputStyle} />
+            </Field>
+            <Field label="Client contact">
+              <input value={form.clientContact} onChange={e => setForm({ ...form, clientContact: e.target.value })} style={inputStyle} />
+            </Field>
+            <Field label="Notes">
+              <textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={2} style={{ ...inputStyle, resize: 'vertical' }} />
+            </Field>
+            <button type="button" onClick={saveForm} style={{ width: '100%', marginTop: 8, background: '#2F6B5E', color: '#fff', border: 'none', borderRadius: 8, padding: '12px', fontSize: 15, fontWeight: 600 }}>
+              {editingId ? 'Save changes' : 'Add pickup'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {emailOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(22,34,31,0.45)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 50 }} onClick={() => setEmailOpen(false)}>
+          <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: '16px 16px 0 0', width: '100%', maxWidth: 480, padding: '20px 20px 24px', maxHeight: '80vh', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <h3 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 17, margin: 0 }}>Weekly email</h3>
+              <button onClick={() => setEmailOpen(false)} style={{ background: 'none', border: 'none', color: '#6B7A76' }}><XIcon size={20} /></button>
+            </div>
+            <pre style={{ whiteSpace: 'pre-wrap', fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 13, background: '#F5F3EE', borderRadius: 10, padding: 14, color: '#1C2B2A', margin: '0 0 14px' }}>{emailText}</pre>
+            <a href={mailtoHref} style={{ display: 'block', textAlign: 'center', background: '#2F6B5E', color: '#fff', borderRadius: 8, padding: '12px', fontSize: 15, fontWeight: 600, textDecoration: 'none' }}>Open in email app</a>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

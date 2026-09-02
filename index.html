@@ -55,6 +55,7 @@ const MapPin = (p) => <Icon {...p} path={<><path d="M20 10c0 6-8 12-8 12s-8-6-8-
 const Repeat = (p) => <Icon {...p} path={<><path d="m17 2 4 4-4 4" /><path d="M3 11v-1a4 4 0 0 1 4-4h14" /><path d="m7 22-4-4 4-4" /><path d="M21 13v1a4 4 0 0 1-4 4H3" /></>} />;
 const XIcon = (p) => <Icon {...p} path={<><path d="M18 6 6 18M6 6l12 12" /></>} />;
 const Package = (p) => <Icon {...p} path={<><path d="m7.5 4.27 9 5.15" /><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" /><path d="M3.3 7 12 12l8.7-5" /><path d="M12 22V12" /></>} />;
+const Printer = (p) => <Icon {...p} path={<><polyline points="6 9 6 2 18 2 18 9" /><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" /><rect x="6" y="14" width="12" height="8" /></>} />;
 
 // ---------- date helpers ----------
 function toDate(s) {
@@ -116,6 +117,7 @@ function occurrencesInRange(pickup, rangeStart, rangeEnd) {
 }
 
 // ---------- backend ----------
+// Paste the Web app URL from your Apps Script deployment here:
 const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwRyf9VhyWUSoAL_bKK833L_Tow-tM1u0PsB5KD2Szo0cZ3I0_sNq4JyJ4e6bumGJc/exec';
 
 async function apiCall(action, extra = {}) {
@@ -138,6 +140,7 @@ async function apiCall(action, extra = {}) {
     throw new Error('Non-JSON response from URL: ' + url + ' — got: ' + text.slice(0, 120));
   }
 }
+
 const RECURRENCE_LABEL = { weekly: 'Weekly', fortnightly: 'Fortnightly', triweekly: 'Every 3 weeks', monthly: 'Monthly' };
 
 const emptyForm = {
@@ -165,7 +168,6 @@ function App() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyForm);
-  const [emailOpen, setEmailOpen] = useState(false);
   const [saveError, setSaveError] = useState(false);
   const [activeTab, setActiveTab] = useState('schedule');
   const [locationSearch, setLocationSearch] = useState('');
@@ -249,6 +251,10 @@ function App() {
 
   const weekStart = useMemo(() => startOfWeek(new Date()), []);
   const weekEnd = useMemo(() => { const e = addDays(weekStart, 6); e.setHours(23,59,59,999); return e; }, [weekStart]);
+  const nextWeekStart = useMemo(() => addDays(weekStart, 7), [weekStart]);
+  const nextWeekEnd = useMemo(() => { const e = addDays(nextWeekStart, 6); e.setHours(23,59,59,999); return e; }, [nextWeekStart]);
+
+  const [viewWeek, setViewWeek] = useState('this'); // 'this' | 'next'
 
   const thisWeek = useMemo(() => {
     const rows = [];
@@ -258,6 +264,15 @@ function App() {
     rows.sort((a, b) => a.date - b.date);
     return rows;
   }, [pickups, weekStart, weekEnd]);
+
+  const nextWeek = useMemo(() => {
+    const rows = [];
+    pickups.forEach(p => {
+      occurrencesInRange(p, nextWeekStart, nextWeekEnd).forEach(date => rows.push({ ...p, date }));
+    });
+    rows.sort((a, b) => a.date - b.date);
+    return rows;
+  }, [pickups, nextWeekStart, nextWeekEnd]);
 
   const grouped = useMemo(() => {
     const g = { weekly: [], fortnightly: [], triweekly: [], monthly: [] };
@@ -281,24 +296,40 @@ function App() {
   function deletePickup(id) { persist(pickups.filter(p => p.id !== id)); }
 
   const weekLabel = `${MONTHS[weekStart.getMonth()]} ${weekStart.getDate()} – ${MONTHS[weekEnd.getMonth()]} ${weekEnd.getDate()}`;
+  const nextWeekLabel = `${MONTHS[nextWeekStart.getMonth()]} ${nextWeekStart.getDate()} – ${MONTHS[nextWeekEnd.getMonth()]} ${nextWeekEnd.getDate()}`;
 
-  const emailText = useMemo(() => {
-    if (thisWeek.length === 0) {
-      return `Pickups due this week (${weekLabel})\n\nNothing scheduled this week.`;
-    }
-    const lines = thisWeek.map(p => {
+  const displayedWeek = viewWeek === 'this' ? thisWeek : nextWeek;
+  const displayedLabel = viewWeek === 'this' ? weekLabel : nextWeekLabel;
+
+  function printList() {
+    const lines = displayedWeek.map(p => {
       const day = DOW[p.date.getDay()];
-      const parts = [`${day} — ${p.title}`];
-      if (p.itemDescription) parts.push(`  Item: ${p.itemDescription}`);
-      if (p.location) parts.push(`  Location: ${p.location}`);
-      if (p.clientName) parts.push(`  Client: ${p.clientName}${p.clientContact ? ' (' + p.clientContact + ')' : ''}`);
-      if (p.notes) parts.push(`  Notes: ${p.notes}`);
-      return parts.join('\n');
+      const bits = [p.itemDescription, p.location, p.clientName ? `${p.clientName}${p.clientContact ? ' (' + p.clientContact + ')' : ''}` : '', p.notes].filter(Boolean);
+      return { day, title: p.title, details: bits };
     });
-    return `Pickups due this week (${weekLabel})\n\n${lines.join('\n\n')}`;
-  }, [thisWeek, weekLabel]);
-
-  const mailtoHref = `mailto:?subject=${encodeURIComponent('Pickups due this week — ' + weekLabel)}&body=${encodeURIComponent(emailText)}`;
+    const html = `
+      <html><head><title>Pickups — ${displayedLabel}</title>
+      <style>
+        body { font-family: sans-serif; padding: 24px; color: #1C2B2A; }
+        h1 { font-size: 20px; margin-bottom: 4px; }
+        p.sub { color: #666; margin-top: 0; margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #ddd; font-size: 13px; vertical-align: top; }
+        th { color: #666; font-weight: 600; }
+      </style></head><body>
+      <h1>Pickups due</h1>
+      <p class="sub">${displayedLabel}</p>
+      <table><thead><tr><th>Day</th><th>Pickup</th><th>Details</th></tr></thead><tbody>
+      ${lines.length === 0 ? '<tr><td colspan="3">Nothing scheduled.</td></tr>' :
+        lines.map(l => `<tr><td>${l.day}</td><td>${l.title}</td><td>${l.details.join(' · ')}</td></tr>`).join('')}
+      </tbody></table>
+      </body></html>`;
+    const w = window.open('', '_blank');
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+    w.print();
+  }
 
   if (gateStatus === 'unconfigured') {
     return (
@@ -384,19 +415,23 @@ function App() {
         {activeTab === 'schedule' && (
         <>
         <section style={{ background: '#16221F', color: '#F5F3EE', borderRadius: 14, padding: '20px 20px 16px', marginBottom: 20 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-            <h2 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 16, fontWeight: 600, margin: 0 }}>Due this week ({thisWeek.length})</h2>
-            <button onClick={() => setEmailOpen(true)} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#F5F3EE', color: '#16221F', border: 'none', borderRadius: 7, padding: '7px 11px', fontSize: 13, fontWeight: 600 }}>
-              <Mail size={14} /> Compose Monday email
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 4, background: '#1F2E2A', borderRadius: 7, padding: 3 }}>
+              <button onClick={() => setViewWeek('this')} style={{ border: 'none', borderRadius: 5, padding: '6px 10px', fontSize: 12, fontWeight: 600, background: viewWeek === 'this' ? '#2F6B5E' : 'transparent', color: '#F5F3EE' }}>This week</button>
+              <button onClick={() => setViewWeek('next')} style={{ border: 'none', borderRadius: 5, padding: '6px 10px', fontSize: 12, fontWeight: 600, background: viewWeek === 'next' ? '#2F6B5E' : 'transparent', color: '#F5F3EE' }}>Next week</button>
+            </div>
+            <button onClick={printList} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#F5F3EE', color: '#16221F', border: 'none', borderRadius: 7, padding: '7px 11px', fontSize: 13, fontWeight: 600 }}>
+              <Printer size={14} /> Print list
             </button>
           </div>
+          <h2 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 16, fontWeight: 600, margin: '0 0 14px' }}>Due {viewWeek === 'this' ? 'this' : 'next'} week ({displayedWeek.length}) · {displayedLabel}</h2>
           {loading ? (
             <p style={{ color: '#A9B6B2', fontSize: 14 }}>Loading…</p>
-          ) : thisWeek.length === 0 ? (
-            <p style={{ color: '#A9B6B2', fontSize: 14 }}>Nothing due this week.</p>
+          ) : displayedWeek.length === 0 ? (
+            <p style={{ color: '#A9B6B2', fontSize: 14 }}>Nothing due {viewWeek === 'this' ? 'this' : 'next'} week.</p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {thisWeek.map((p, i) => (
+              {displayedWeek.map((p, i) => (
                 <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'flex-start', background: '#1F2E2A', borderRadius: 10, padding: '10px 12px' }}>
                   <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 600, fontSize: 13, color: '#7FBBA6', minWidth: 36 }}>{DOW[p.date.getDay()]}</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -530,19 +565,6 @@ function App() {
             <button type="button" onClick={saveForm} style={{ width: '100%', marginTop: 8, background: '#2F6B5E', color: '#fff', border: 'none', borderRadius: 8, padding: '12px', fontSize: 15, fontWeight: 600 }}>
               {editingId ? 'Save changes' : 'Add pickup'}
             </button>
-          </div>
-        </div>
-      )}
-
-      {emailOpen && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(22,34,31,0.45)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 50 }} onClick={() => setEmailOpen(false)}>
-          <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: '16px 16px 0 0', width: '100%', maxWidth: 480, padding: '20px 20px 24px', maxHeight: '80vh', overflowY: 'auto' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-              <h3 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 17, margin: 0 }}>Weekly email</h3>
-              <button onClick={() => setEmailOpen(false)} style={{ background: 'none', border: 'none', color: '#6B7A76' }}><XIcon size={20} /></button>
-            </div>
-            <pre style={{ whiteSpace: 'pre-wrap', fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 13, background: '#F5F3EE', borderRadius: 10, padding: 14, color: '#1C2B2A', margin: '0 0 14px' }}>{emailText}</pre>
-            <a href={mailtoHref} style={{ display: 'block', textAlign: 'center', background: '#2F6B5E', color: '#fff', borderRadius: 8, padding: '12px', fontSize: 15, fontWeight: 600, textDecoration: 'none' }}>Open in email app</a>
           </div>
         </div>
       )}
